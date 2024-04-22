@@ -151,6 +151,9 @@ def main():
                         help='For Saving the current Model')
     args = parser.parse_args()
 
+    # <--- 阶段一：选择训练使用的设备（GPU、CPU、mps）--->
+    # 主要涉及环境安装、CUDA 驱动、容器 CUDA 的环境配置 so 等等
+
     # 根据命令行参数决定是否使用CUDA或macOS的GPU训练
     use_cuda = not args.no_cuda and torch.cuda.is_available()
     use_mps = not args.no_mps and torch.backends.mps.is_available()
@@ -168,6 +171,10 @@ def main():
 
     # 打印训练使用的设备
     print("Using Device: {}\n".format(device))
+
+    # <--- 阶段二：优化训练系统参数--->
+    # 主要涉及：CPU 和 GPU 的参数配置，如线程数、内存分配策略（pin-memory）等等。
+    # 跟数据集相关的有批处理大小。
 
     # 定义训练和测试的批处理参数，并根据是否使用CUDA添加额外的参数
     # 定义并初始化字典类型的训练参数
@@ -200,6 +207,11 @@ def main():
         train_kwargs.update(cuda_kwargs)
         test_kwargs.update(cuda_kwargs)
 
+    # <--- 阶段三：数据集和模型加载 --->
+    # 主要涉及：数据集和模型如何加载（路径、是否用于训练、从哪下载（框架内部定义））、数据集加载器和优化器的选择、学习率的设置
+    # ** 数据集的加载和之前设置的 patch_size 大小有关，数据集在这里会根据 patch 进行分片。其次模型也会从磁盘读取到 GPU。
+
+    # 跟数据集相关的有批处理大小。
     # 数据集的加载和转换
     transform=transforms.Compose([
         transforms.ToTensor(),
@@ -221,6 +233,7 @@ def main():
     # 学习率调整策略
     scheduler = StepLR(optimizer, step_size=1, gamma=args.gamma)
 
+    # <--- 阶段四：模型训练和 ckpt 保存 --->
     # 开始训练和测试
     for epoch in range(1, args.epochs + 1):
         train(args, model, device, train_loader, optimizer, epoch)

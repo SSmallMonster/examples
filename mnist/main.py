@@ -1,5 +1,7 @@
 from __future__ import print_function
 import argparse
+import time
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -32,6 +34,7 @@ class Net(nn.Module):
         x = self.fc2(x)
         output = F.log_softmax(x, dim=1)
         return output
+
 
 # model 是作为参数传入 train 函数的一个对象。根据代码上下文，model 应当是一个已经定义好的深度学习模型，它可以是：
 # 现成的基础模型：这意味着 model 可能是基于某个预训练的深度学习基础模型构建的。例如，它可能是基于 PyTorch 中的
@@ -77,9 +80,53 @@ def train(args, model, device, train_loader, optimizer, epoch):
 
     model.train()  # 设置模型为训练模式
 
-    for batch_idx, (data, target) in enumerate(train_loader):
-        data, target = data.to(device), target.to(device)  # 将批次数据和标签移动至指定设备
+    num_batches = len(train_loader)
+    time_wait = 15
+    print(f"Batch number in this train loader: {num_batches}")
 
+    # Profile Point -> prepare data on cpu
+    if args.wait:
+        print(f"Train loader will start after {time_wait} seconds")
+        time.sleep(time_wait)
+
+    # 在操作前检查分配和保留的内存
+    allocated_before = torch.cuda.memory_allocated(device)
+    # reserved_before = torch.cuda.memory_reserved(device)
+
+    # train_loader 每次迭代都会输出按照 BatchSize 大小预处理之后的 Tensor 张量数据
+    # 以 BatchSize=1 为例，输入数据经过预处理后，其 Tensor 是 [[[[1, 1, 28, 28]]]]]，其中 1 表示 batch_size，1 表示通道数（灰度图），28 表示图像宽度，28 表示图像高度。
+    # torch.Torch: ('batch', 'channels', 'H', 'W')
+    # 张量化的过程一般发生在训练过程中，一般是多维数组，以图形训练 mnist 为例，一般是四维数组。 GPU 只能处理张量数据，因此这个过程就是在样本数据被送入到
+    # GPU显存之前发生。一般配合模型训练定义的预处理函数一起发生。预处理函数将按照特定逻辑讲数据处理成张量。
+    for batch_idx, (data, target) in enumerate(train_loader):
+        # print("Train loader is ready batch_idx {}".format(batch_idx))
+
+        # 张量中元素数量、单个元素大小、元素占用内存
+        element_count = data.nelement()  # 以 batch_size=1，图片像素 28x28 时，元素数量为 784
+        element_size = data.element_size()  # 以 batch_size=1 时，单个元素大小为 4
+        tensor_size = element_count * element_size # 以 batch_size=1 图片像素 28x28 时，单个图片向量化之后大小是 3136 字节
+        print(f"element_size: {element_size}, element_count: {element_count}, tensor_size: {tensor_size}")
+
+        print(f"data storage_type: {data.storage_type()}")
+
+        # 再次检查内存，看看变化
+        allocated_after = torch.cuda.memory_allocated(device)
+        # reserved_after = torch.cuda.memory_reserved(device)
+
+        # 打印结果
+        # print(f"内存分配变化量: {allocated_after - allocated_before} bytes")
+        # print(f"内存预留变化量: {reserved_after - reserved_before} bytes")
+
+        # Profile Point -> HostToDevice
+        if args.wait:
+            print(f"Data transform from cpu to {device} will start after {time_wait} seconds")
+            time.sleep(time_wait)
+
+        data = data.to(device)  # 将训练数据移动到指定设备
+        if args.wait:
+            print("Data transform is finished")
+
+        target = target.to(device)  # 将标签数据移动至指定设备
         optimizer.zero_grad()  # 清除优化器中累积的梯度
 
         output = model(data)  # 执行模型前向传播以获取预测结果
@@ -91,11 +138,10 @@ def train(args, model, device, train_loader, optimizer, epoch):
         if batch_idx % args.log_interval == 0:  # 按照 log_interval 定义的间隔打印训练进度与当前损失
             print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
                 epoch, batch_idx * len(data), len(train_loader.dataset),
-                100. * batch_idx / len(train_loader), loss.item()))
+                       100. * batch_idx / len(train_loader), loss.item()))
 
-            if args.dry_run:  # 干运行模式：打印首个进度消息后终止训练循环
+            if args.dry_run:  # 打印首个进度消息后终止训练循环
                 break
-
 
 
 def test(model, device, test_loader):
@@ -116,6 +162,8 @@ def test(model, device, test_loader):
         test_loss, correct, len(test_loader.dataset),
         100. * correct / len(test_loader.dataset)))
 
+def get_time_elapsed(start_time):
+    return "{:.2f}".format((time.time() - start_time))
 
 def main():
     """
@@ -131,7 +179,7 @@ def main():
                         help='input batch size for training (default: 64)')
     parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
                         help='input batch size for testing (default: 1000)')
-    parser.add_argument('--epochs', type=int, default=3, metavar='N',
+    parser.add_argument('--epochs', type=int, default=1, metavar='N',
                         help='number of epochs to train (default: 14)')
     parser.add_argument('--lr', type=float, default=1.0, metavar='LR',
                         help='learning rate (default: 1.0)')
@@ -149,6 +197,8 @@ def main():
                         help='how many batches to wait before logging training status')
     parser.add_argument('--save-model', action='store_true', default=False,
                         help='For Saving the current Model')
+    parser.add_argument('--wait', type=bool, default=False,
+                        help='Wait before action triggered')
     args = parser.parse_args()
 
     # <--- 阶段一：选择训练使用的设备（GPU、CPU、mps）--->
@@ -176,6 +226,8 @@ def main():
     # 主要涉及：CPU 和 GPU 的参数配置，如线程数、内存分配策略（pin-memory）等等。
     # 跟数据集相关的有批处理大小。
 
+    # 预处理：
+
     # 定义训练和测试的批处理参数，并根据是否使用CUDA添加额外的参数
     # 定义并初始化字典类型的训练参数
 
@@ -198,6 +250,8 @@ def main():
 
     # 总结起来，pin_memory 参数在 PyTorch 的 DataLoader 中启用后，主要在数据预处理完成后固定数据到页锁定内存，以及后续数据从CPU到GPU的转移过程中发挥作用，旨在提高数据加载和传输的效率，
     # 尤其在使用GPU进行深度学习训练时具有重要意义。
+    # train_kwargs = {'batch_size': args.batch_size, 'drop_last': True}
+    # test_kwargs = {'batch_size': args.test_batch_size, 'drop_last': True}
     train_kwargs = {'batch_size': args.batch_size}
     test_kwargs = {'batch_size': args.test_batch_size}
     if use_cuda:
@@ -213,17 +267,26 @@ def main():
 
     # 跟数据集相关的有批处理大小。
     # 数据集的加载和转换
-    transform=transforms.Compose([
-        transforms.ToTensor(),
-        transforms.Normalize((0.1307,), (0.3081,))
-        ])
+    transform = transforms.Compose([
+        transforms.ToTensor(), # 将图片转换为PyTorch Tensor
+        transforms.Normalize((0.1307,), (0.3081,)) # 归一化，使用MNIST数据集的均值和标准差
+    ])
+
+    time_start = time.time()
+    # 这个地方会实例化 MNIST 对象，初始化阶段会去真正下载数据
+    # Dataset 负责原始数据的读取或者基本的数据处理（比如在NLP任务中常常需要把文字转化为对应字典ids，这个步骤就可以放在Dataset中执行）
+    # Dataset得到的数据集你可以理解为是个"列表"（可以根据index取出某个特定位置的数据）
     dataset1 = datasets.MNIST('../data', train=True, download=True,
-                       transform=transform)
+                              transform=transform)
     dataset2 = datasets.MNIST('../data', train=False,
-                       transform=transform)
+                              transform=transform)
+    print("Phase 3: Finish Loading Dataset and Convert to Torch, time elapsed: {} seconds\n".
+          format(get_time_elapsed(time_start)))
 
     # 创建数据加载器
-    train_loader = torch.utils.data.DataLoader(dataset1,**train_kwargs)
+    # batch_size 会在这个对象生效，用于切分数据集，每个数据集里面有多少个元素
+    # 此时数据还没有处理成张量数据。Transform 定义的一些预处理函数还没有真正调用，CPU 还没有读取数据。
+    train_loader = torch.utils.data.DataLoader(dataset1, **train_kwargs)
     test_loader = torch.utils.data.DataLoader(dataset2, **test_kwargs)
 
     # 模型的加载和优化器的选择
@@ -237,13 +300,12 @@ def main():
     # 开始训练和测试
     for epoch in range(1, args.epochs + 1):
         train(args, model, device, train_loader, optimizer, epoch)
-        test(model, device, test_loader)
-        scheduler.step()
+        # test(model, device, test_loader)
+        # scheduler.step()
 
     # 如果设置了保存模型，则保存
     if args.save_model:
         torch.save(model.state_dict(), "mnist_cnn.pt")
-
 
 
 if __name__ == '__main__':
